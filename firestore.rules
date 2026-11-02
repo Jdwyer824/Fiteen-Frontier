@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Team games: anyone with the link can read and play. Nobody can delete.
+    match /games3/{team} {
+      allow read: if true;
+      allow create, update: if request.resource.data.keys().hasOnly(['team', 'decisions', 'draft', 'roster', 'updatedAt'])
+        && request.resource.data.team is string && request.resource.data.team.size() <= 60
+        && request.resource.data.decisions is list && request.resource.data.decisions.size() <= 6;
+      allow delete: if false;
+    }
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

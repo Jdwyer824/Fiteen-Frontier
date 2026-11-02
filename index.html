@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,-apple-system,"Segoe UI",sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>window.FIREBASE_CONFIG={};</script>
+<script>/* Firebase adapter: gives the game the same small data API it uses inside Claude. */
+function firebaseDb(){
+ const cfg=window.FIREBASE_CONFIG;
+ if(!cfg||!cfg.projectId||typeof firebase==='undefined') return null;
+ try{
+  if(!firebase.apps.length) firebase.initializeApp(cfg);
+  const fs=firebase.firestore();
+  const err=e=>({code:e&&e.code==='permission-denied'?'invalid_argument':e&&e.code==='resource-exhausted'?'quota_exceeded':'unavailable',message:String(e&&e.message||e)});
+  const wrap=s=>({id:s.id,exists:s.exists,data:()=>s.data(),metadata:s.metadata});
+  // Firestore replaces nested maps on update; the roster must merge one player at a time.
+  const flat=d=>{ const o={}; for(const [k,v] of Object.entries(d)){ if(k==='roster'&&v&&typeof v==='object'&&!Array.isArray(v)){ for(const [id,e] of Object.entries(v)) o['roster.'+id]=e; } else o[k]=v; } return o; };
+  const doc=p=>{ const r=fs.doc(p); return {
+   get:async()=>{ try{ return wrap(await r.get()); }catch(e){ throw err(e); } },
+   set:d=>r.set(d).catch(e=>{ throw err(e); }),
+   update:d=>r.update(flat(d)).catch(e=>{ throw err(e); }),
+   onSnapshot:(next,onErr)=>r.onSnapshot(s=>next(wrap(s)),e=>onErr&&onErr(err(e))) }; };
+  const collection=p=>{ let q=fs.collection(p); const api={
+   limit(n){ q=q.limit(n); return api; },
+   onSnapshot:(next,onErr)=>q.onSnapshot(qs=>next({docs:qs.docs.map(wrap),size:qs.size,empty:qs.empty}),e=>onErr&&onErr(err(e))) }; return api; };
+  return {doc,collection};
+ }catch(e){ return null; }
+}
+</script>
+</head><body>
+<title>Fiteen Frontier</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: field-logbook console — round track across the top, decision sheet left, ledger + log right */
+:root{
+  --bg:#E9EDEB; --panel:#F7F9F8; --ink:#17201E; --muted:#56635F; --line:#C9D2CE;
+  --accent:#0B6F78; --accent-ink:#FFFFFF; --ore:#A9581C; --good:#2D7A3E; --bad:#B23A2E; --contour:rgba(11,111,120,.10);
+  --f-display:"Big Shoulders Display","Arial Narrow",Impact,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#101716; --panel:#172120; --ink:#E3EBE8; --muted:#94A39E; --line:#2A3835;
+  --accent:#3FB6BF; --accent-ink:#06191B; --ore:#E08A4B; --good:#5BBE6F; --bad:#EE6B5E; --contour:rgba(63,182,191,.08); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#101716; --panel:#172120; --ink:#E3EBE8; --muted:#94A39E; --line:#2A3835;
+  --accent:#3FB6BF; --accent-ink:#06191B; --ore:#E08A4B; --good:#5BBE6F; --bad:#EE6B5E; --contour:rgba(63,182,191,.08); color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5;
+  background-image:repeating-radial-gradient(circle at 85% -10%,transparent 0 38px,var(--contour) 38px 39px);background-attachment:fixed}
+.wrap{max-width:1240px;margin:0 auto;padding-block:20px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between;border-bottom:2px solid var(--ink);padding-bottom:12px}
+h1{font-family:var(--f-display);font-weight:800;font-size:clamp(2.2rem,5vw,3.4rem);line-height:.9;margin:0;letter-spacing:.01em;text-transform:uppercase}
+h1 small{display:block;font-family:var(--f-mono);font-size:.75rem;font-weight:400;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;margin-bottom:6px}
+h2{font-family:var(--f-display);font-weight:800;font-size:1.9rem;text-transform:uppercase;margin:0;line-height:1;text-wrap:balance}
+h3{font-family:var(--f-mono);font-size:.72rem;font-weight:500;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.track{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin:18px 0}
+.step{border-top:4px solid var(--line);padding-top:6px;font-size:.8rem;color:var(--muted);min-width:0}
+.step b{display:block;font-family:var(--f-mono);font-size:.7rem;letter-spacing:.1em}
+.step.done{border-color:var(--ink);color:var(--ink)}.step.now{border-color:var(--accent);color:var(--accent);font-weight:600}
+.kpis{display:flex;flex-wrap:wrap;gap:8px 28px;margin-bottom:18px}
+.kpi{font-family:var(--f-mono);font-variant-numeric:tabular-nums}.kpi span{display:block;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.kpi strong{font-size:1.3rem;font-weight:500}
+.grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:20px;align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.sheet{background:var(--panel);border:1px solid var(--line);padding:20px;display:flex;flex-direction:column;gap:20px;min-width:0}
+.brief{color:var(--muted);max-width:62ch;margin:6px 0 0}
+fieldset{border:0;border-top:1px solid var(--line);margin:0;padding:14px 0 0;display:flex;flex-direction:column;gap:10px;min-width:0}
+legend{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:0 8px 0 0}
+.sites{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+.site{border:1px solid var(--line);padding:10px;display:flex;flex-direction:column;gap:4px;font-size:.85rem;background:var(--bg)}
+.site.lic{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+.site .code{font-family:var(--f-display);font-size:1.4rem;font-weight:800;line-height:1}
+.site .meta{font-family:var(--f-mono);font-size:.75rem;color:var(--muted)}
+.tag{display:inline-block;font-family:var(--f-mono);font-size:.68rem;padding:1px 6px;border:1px solid currentColor;text-transform:uppercase;letter-spacing:.06em}
+.risk-low{color:var(--good)}.risk-med{color:var(--ore)}.risk-high,.risk-stakeholder{color:var(--bad)}
+label{display:flex;gap:8px;align-items:center;cursor:pointer}
+.row{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+input[type=number]{width:90px;font:inherit;font-family:var(--f-mono);padding:6px 8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+select{font:inherit;padding:6px 8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);max-width:100%}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seg{display:grid;grid-template-columns:minmax(0,1.6fr) auto minmax(0,1fr);gap:6px 12px;align-items:center;font-size:.9rem}
+.seg .d{font-family:var(--f-mono);font-size:.8rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.note{font-size:.85rem;color:var(--muted);margin:0}
+.preview{font-family:var(--f-mono);font-size:.82rem;background:var(--bg);border:1px dashed var(--line);padding:10px;font-variant-numeric:tabular-nums}
+button{font:inherit;font-weight:600;cursor:pointer;border:2px solid var(--ink);background:var(--ink);color:var(--bg);padding:10px 18px;letter-spacing:.02em}
+button.alt{background:transparent;color:var(--ink)}
+button.go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.ledger{background:var(--panel);border:1px solid var(--line);padding:16px;min-width:0}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-family:var(--f-mono);font-size:.78rem;font-variant-numeric:tabular-nums}
+th,td{padding:4px 6px;text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left;font-family:var(--f-body)}
+thead th{border-bottom:2px solid var(--ink);font-weight:500}
+tr.sub td{border-top:1px solid var(--line);font-weight:600}tr.key td{background:var(--bg);font-weight:600}
+.neg{color:var(--bad)}
+.log{margin-top:16px;display:flex;flex-direction:column;gap:6px;font-size:.85rem;max-height:340px;overflow:auto}
+.log div{border-left:3px solid var(--line);padding-left:8px}.log .ev{border-color:var(--ore)}.log .bad{border-color:var(--bad)}
+.log .r{font-family:var(--f-mono);font-size:.7rem;color:var(--muted)}
+.start{max-width:640px;margin:40px auto;display:flex;flex-direction:column;gap:16px}
+.start p{margin:0;max-width:62ch}
+.roles{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;font-size:.85rem}
+.roles div{border-top:2px solid var(--accent);padding-top:6px}
+.exit{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+.exit .kpi strong{font-size:1.6rem}
+ol.debrief{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;max-width:68ch}
+@media(prefers-reduced-motion:no-preference){.sheet{animation:in .25s ease-out}@keyframes in{from{transform:translateY(4px)}to{transform:none}}}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.card{position:relative;border:1px solid var(--line);background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:4px;cursor:pointer;align-items:flex-start}
+.card input{position:absolute;opacity:0;pointer-events:none}
+.card:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.card:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.card b{font-family:var(--f-display);font-size:1.35rem;text-transform:uppercase;line-height:1}
+.card .meta{font-family:var(--f-mono);font-size:.78rem;color:var(--muted)}
+.card .why{font-size:.85rem}
+.toggle{display:flex;gap:10px;align-items:flex-start;font-size:.92rem}
+.toggle input{margin-top:4px}
+
+.card.dis{opacity:.45;cursor:not-allowed}
+textarea{width:100%;min-height:70px;font:inherit;padding:8px 10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);resize:vertical}
+textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.think{border:1px solid var(--accent);background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:10px}
+.think h3{color:var(--accent);margin:0}
+.warn{color:var(--bad);font-weight:600;font-size:.9rem;margin:0}
+.crisis{border-left:4px solid var(--ore);padding:6px 0 6px 12px}
+.crisis b{font-family:var(--f-display);font-size:1.5rem;text-transform:uppercase}
+button:disabled{opacity:.4;cursor:not-allowed}
+.small{font-size:.8rem}
+.decisions{display:flex;flex-direction:column;gap:10px;font-size:.88rem}
+.decisions div{border-top:1px solid var(--line);padding-top:8px}
+.decisions .r{font-family:var(--f-mono);font-size:.72rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.banner{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:.85rem;padding:8px 12px;border:1px solid var(--line);background:var(--panel);margin-top:14px}
+.banner .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+.banner.live .dot{background:var(--good)}
+.banner.watch .dot{background:var(--ore)}
+.board{background:var(--panel);border:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:8px}
+.board table td:nth-child(2),.board table th:nth-child(2){text-align:left}
+.lobby{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:start;margin:28px auto;max-width:1100px}
+@media(max-width:860px){.lobby{grid-template-columns:1fr}}
+.lobby .start{margin:0}
+.rolegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.rolecard{position:relative;border:1px solid var(--line);background:var(--bg);padding:12px;display:flex;flex-direction:column;gap:4px;cursor:pointer;align-items:flex-start}
+.rolecard input{position:absolute;opacity:0;pointer-events:none}
+.rolecard:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.rolecard:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.rolecard:has(input:disabled){opacity:.45;cursor:not-allowed}
+.rolecard b{font-family:var(--f-display);font-size:1.3rem;text-transform:uppercase;line-height:1}
+.rolecard .who{font-family:var(--f-mono);font-size:.74rem;color:var(--muted)}
+.roster{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.84rem;margin-top:10px;align-items:baseline}
+.roster span{white-space:nowrap}.roster .lead{color:var(--accent);font-weight:600}.roster .open{color:var(--bad)}
+.textin{width:100%;font:inherit;padding:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+
+.modal-back{position:fixed;inset:0;background:rgba(10,20,20,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:max(24px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(24px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.modal{background:var(--panel);color:var(--ink);border:2px solid var(--ink);max-width:720px;width:100%;padding:22px;display:flex;flex-direction:column;gap:16px;margin:auto 0}
+.modal .grade{display:flex;flex-wrap:wrap;gap:8px 24px;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:12px}
+.modal .pill{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border:1.5px solid currentColor}
+.pill.top{color:var(--good)}.pill.mid{color:var(--ore)}.pill.low{color:var(--bad)}
+.fb{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.fb li{padding-left:14px;border-left:3px solid var(--line);font-size:.92rem;max-width:68ch}
+.fb.good li{border-color:var(--good)}.fb.bad li{border-color:var(--bad)}.fb.tip li{border-color:var(--accent)}
+.fb b{font-weight:600}
+
+.rolereport{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.rr{border:1px solid var(--line);background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.rr header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;border:0;padding:0;flex-wrap:wrap}
+.rr header b{font-family:var(--f-display);font-size:1.35rem;text-transform:uppercase;line-height:1}
+.rr .who{font-family:var(--f-mono);font-size:.74rem;color:var(--muted)}
+.rr .fb li{font-size:.86rem}
+.rr .verdict{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border:1.5px solid currentColor;white-space:nowrap}
+.verdict.top{color:var(--good)}.verdict.mid{color:var(--ore)}.verdict.low{color:var(--bad)}
+
+.dec{border:1px solid var(--line);padding:12px 14px 14px;gap:8px;background:var(--panel)}
+.dec legend{font-family:var(--f-body);font-size:1rem;letter-spacing:0;text-transform:none;color:var(--ink);font-weight:600;padding:0 6px}
+.dec.mine{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+.owner{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.dec.mine .owner{color:var(--accent)}
+.dec .cards{grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}
+</style>
+<div class="wrap" id="app"></div>
+<script>// Fiteen Frontier v3 — money in $M, fuel in thousand barrels (k bbl). Revenue $M = k bbl × $/bbl ÷ 1000.
+const P = {
+  start: 12, overhead: 1, wholesale: 60,
+  sites: {
+    desert: { name: 'Desert Rim', tagline: 'Small and safe', license: 2, advertised: 150, actual: 150, cost: 30, risky: false },
+    ridge: { name: 'Northern Ridge', tagline: 'Big, next to protected wetlands', license: 3, advertised: 300, actual: 300, cost: 35, risky: true },
+    coast: { name: 'Coastal Shelf', tagline: 'Cheapest to pump, seller promises a lot', license: 4, advertised: 250, actual: 100, cost: 25, risky: false },
+  },
+  funding: {
+    none: { name: 'Go it alone', cash: 0, repay: 0, share: 0 },
+    loan: { name: 'Bank loan', cash: 6, repay: 8, share: 0 },
+    investor: { name: 'Investor', cash: 8, repay: 0, share: 0.30 },
+  },
+  rigs: { starter: { name: 'Starter rigs', output: 0.5, per100: 1.5 }, full: { name: 'Full rigs', output: 1, per100: 3 } },
+  transport: { truck: { name: 'Trucks', perBbl: 5, cost: 0 }, pipeline: { name: 'Pipeline', perBbl: 1, cost: 3 } },
+  safetyCost: 1, accidentChance: 0.35, accidentCost: 4, accidentCut: 0.3,
+  protectCost: 1, fineChance: 0.5, fineChancePledge: 0.2, fineCost: 4,
+  surveyCost: 0.5, interviewCost: 0.3, pledgeCost: 0.5, marketingCost: 1, marketingBoost: 0.1,
+  rndCost: 1.5, rndCut: 4, extendCost: 3, extendBoost: 0.15, insuranceCost: 0.5, insuranceCover: 0.75,
+  pushOutput: 0.2, pushCost: 3, pushRisk: 0.1, researchCost: 0.5,
+  reassureCost: 0.5, repayEarly: 7, buybackCost: 3.5, buybackShare: 0.1, bonusCost: 1, bonusBoost: 0.1,
+  efficiencyCost: 1, efficiencyCut: 5, loyaltyCost: 1, loyaltyBoost: 0.15,
+  customers: {
+    utilities: { name: 'Power utilities', bonus: 0, certCost: 0, cap: Infinity, buys: { low: 1, mid: 0.8, high: 0.55 } },
+    airlines: { name: 'Airlines', bonus: 15, certCost: 1, cap: 150, buys: { low: 1, mid: 0.95, high: 0.85 } },
+  },
+  tiers: { low: { name: 'Low', price: 75 }, mid: { name: 'Market', price: 90 }, high: { name: 'Premium', price: 105 } },
+  crises: {
+    leak: { title: 'Tank leak near a town', text: 'A storage tank leaked fuel into a creek next to a small town. Nobody outside the company knows yet.',
+      options: { a: 'Full cleanup and public apology: $3M', b: 'Quick patch, stay quiet: $1M, but a 50% chance the town sues for $5M (25% with the community pledge)', c: 'Do nothing: free, but a 70% chance it hits the news (40% with the pledge): $6M fine and your customer buys 25% less next round' } },
+    strike: { title: 'Workers walk out', text: 'Field workers stopped work over pay and long shifts.',
+      options: { a: 'Raise pay: $2M now and $1M more next round', b: 'Negotiate: $1M, output down 20% this round', c: 'Hire replacements: $0.5M, output down 40% this round and a 30% accident chance (15% with the pledge)' } },
+    spike: { title: 'Cold snap', text: 'A cold snap hit. Traders are offering $95 a barrel for everything you can pump this round.',
+      options: { a: 'Sell everything to traders at $95. Your customer buys 30% less next round', b: 'Stay loyal to your customer. They pay you $5 more per barrel next round', c: 'Split it: half to traders at $95, half to your customer as usual' } },
+  },
+  competitorCut: 15,
+  cards: {
+    war: { name: 'Price war', desc: 'Cut your price another $10. Your customer buys everything.', cost: 0 },
+    contract: { name: 'Long-term contract', desc: 'Lock in $85 a barrel for all your fuel.', cost: 0 },
+    brand: { name: 'Brand campaign', desc: 'Keep your price. Customer buys 20% more.', cost: 2 },
+    expand: { name: 'Expand the field', desc: 'Pump 50% more this round.', cost: 4 },
+    sell: { name: 'Sell the company', desc: 'A buyer offers $8M today. You skip this round.', cost: 0 },
+  },
+  buyout: 8, buyoutPush: 10, predictBand: 1, predictBonus: 0.5, cleanBonus: 3,
+};
+const yes = v => v === true || v === 'yes';
+const YN = (yesLabel, yesMeta, yesDesc, noLabel, noDesc) => [{ v: 'no', label: noLabel || 'No', meta: 'Free', desc: noDesc || '' }, { v: 'yes', label: yesLabel, meta: yesMeta, desc: yesDesc }];
+
+// Role-owned decisions per round. `show(st)` hides a decision when it doesn't apply.
+const DECISIONS = {
+  1: [
+    { key: 'site', owner: 'Explorer', title: 'Which site do we license?', opts: Object.entries(P.sites).map(([k, v]) => ({ v: k, label: v.name, meta: `License $${v.license}M · ${v.advertised}k bbl a round · $${v.cost}/bbl to pump`, desc: v.tagline + (v.risky ? '. 50% chance of a $4M wetland fine each round unless the CEO pays $1M for protection.' : '.') })), def: 'desert' },
+    { key: 'survey', owner: 'Operations', info: true, title: 'Survey the sites first?', opts: YN('Survey', '$0.5M', 'Engineers check what is really underground at all three sites.', 'Skip it'), def: 'no' },
+    { key: 'interviews', owner: 'Sales', info: true, title: 'Interview potential customers?', opts: YN('Interview', '$0.3M', 'Learn exactly how much each customer buys at each price. Saves buying research in Round 4.', 'Skip it'), def: 'no' },
+    { key: 'pledge', owner: 'CEO', title: 'Make a community pledge?', opts: YN('Pledge', '$0.5M once', 'Commit to working with local communities. Cuts wetland fine risk from 50% to 20% and lowers the odds of bad crisis outcomes.', 'No pledge'), def: 'no' },
+  ],
+  2: [
+    { key: 'funding', owner: 'Finance', title: 'How do we fund the build?', opts: [
+      { v: 'none', label: 'Go it alone', meta: 'No new money', desc: 'Keep 100% of the company.' },
+      { v: 'loan', label: 'Bank loan', meta: '+$6M now', desc: 'Pay back $8M at the end of the game.' },
+      { v: 'investor', label: 'Investor', meta: '+$8M now', desc: 'The investor owns 30% of whatever you end with.' }], def: 'none' },
+    { key: 'transport', owner: 'Operations', title: 'How do we move the fuel?', opts: [
+      { v: 'truck', label: 'Trucks', meta: '$5 per barrel', desc: 'Nothing up front. Costs grow with every barrel.' },
+      { v: 'pipeline', label: 'Pipeline', meta: '$3M now, then $1 per barrel', desc: 'Pays off when you move a lot of fuel.' }], def: 'truck' },
+    { key: 'marketing', owner: 'Sales', title: 'Pre-launch marketing?', opts: YN('Launch campaign', '$1M', 'Build buzz now. Every customer buys 10% more of your fuel in Rounds 4–6.', 'Skip it'), def: 'no' },
+    { key: 'rnd', owner: 'Explorer', title: 'Partner with university geologists?', opts: YN('Partner', '$1.5M', 'Better extraction methods cut pumping cost $4 a barrel from Round 4 on.', 'Skip it'), def: 'no' },
+  ],
+  3: [
+    { key: 'rigs', owner: 'Operations', title: 'Which rigs do we build?', opts: [
+      { v: 'starter', label: 'Starter rigs', meta: '$1.5M per 100k bbl of advertised size', desc: 'Half output every round.' },
+      { v: 'full', label: 'Full rigs', meta: '$3M per 100k bbl of advertised size', desc: 'Pumps everything the site allows.' }], def: 'full' },
+    { key: 'extend', owner: 'Explorer', title: 'Extend the field?', opts: YN('Extend', '$3M', 'Open a new section of the deposit. Output up 15% from Round 4 on.', 'Not now'), def: 'no' },
+    { key: 'insurance', owner: 'CEO', title: 'Buy insurance?', opts: YN('Insure', '$0.5M every round', 'Covers 75% of the cost of field accidents and wetland fines from now on. Crisis penalties aren’t covered.', 'No insurance'), def: 'no' },
+  ],
+  4: [
+    { key: 'customer', owner: 'Sales', title: 'Who do we sell to?', opts: [
+      { v: 'utilities', label: 'Power utilities', meta: 'No extra cost', desc: 'Will buy as much as you can pump.' },
+      { v: 'airlines', label: 'Airlines', meta: '+$15/bbl · $1M certification', desc: 'Pay more, but buy at most 150k barrels a round.' }], def: 'utilities' },
+    { key: 'tier', owner: 'Finance', title: 'What price do we charge?', opts: Object.entries(P.tiers).map(([k, t]) => ({ v: k, label: t.name, meta: `$${t.price}/bbl (+$15 from airlines)`, desc: '' })), def: 'mid' },
+    { key: 'pace', owner: 'Operations', title: 'How hard do we run the field?', opts: [
+      { v: 'steady', label: 'Steady', meta: 'Normal', desc: 'Normal output and risk.' },
+      { v: 'push', label: 'Push it', meta: '+20% output', desc: 'For Rounds 4–6: +$3/bbl pumping cost and +10% accident chance every round, even with safety on.' }], def: 'steady' },
+  ],
+  5: [
+    { key: 'crisis', owner: 'CEO', title: 'How do we respond to the crisis?', opts: null, def: 'a' },
+    { key: 'reassure', owner: 'Sales', title: 'Reassure our customer?', opts: YN('Reassure', '$0.5M', 'Personal calls and a discount on the next order. Cancels any drop in what your customer buys next round.', 'Stay quiet'), def: 'no' },
+    { key: 'capital', owner: 'Finance', title: 'Any money move?', opts: null, def: 'hold' },
+  ],
+  6: [
+    { key: 'card', owner: 'CEO', title: 'How do we respond to the competitor?', opts: Object.entries(P.cards).map(([k, c]) => ({ v: k, label: c.name, meta: c.cost ? `$${c.cost}M` : 'Free', desc: c.desc })), def: 'contract' },
+    { key: 'efficiency', owner: 'Operations', title: 'Run an efficiency program?', opts: YN('Run it', '$1M', 'Cut pumping cost $5 a barrel this round.', 'Skip it'), def: 'no' },
+    { key: 'loyalty', owner: 'Sales', title: 'Customer loyalty push?', opts: YN('Push loyalty', '$1M', 'Your customer buys 15% more this round. No effect with a price war, contract or sale.', 'Skip it'), def: 'no' },
+    { key: 'negotiate', owner: 'Finance', title: 'If we sell, how do we negotiate?', opts: [
+      { v: 'accept', label: 'Accept $8M', meta: 'Safe', desc: 'Take the offer as it stands.' },
+      { v: 'push', label: 'Push for $10M', meta: '50/50', desc: 'Half the time the buyer agrees. Otherwise they walk away and you play the round with no strategy card.' }], def: 'accept' },
+  ],
+};
+// Options that depend on the game state.
+function decisionOptions(st, R, key) {
+  if (R === 5 && key === 'crisis') return Object.entries(P.crises[st.crisis].options).map(([k, t]) => ({ v: k, label: 'Option ' + k.toUpperCase(), meta: '', desc: t }));
+  if (R === 5 && key === 'capital') {
+    const hold = { v: 'hold', label: 'Hold cash', meta: 'Free', desc: 'Keep your cash for the last round.' };
+    if (st.funding === 'loan') return [hold, { v: 'repay', label: 'Repay the loan early', meta: `$${P.repayEarly}M now`, desc: 'Pay $7M now instead of $8M at the end. Saves $1M if you can spare the cash.' }];
+    if (st.funding === 'investor') return [hold, { v: 'buyback', label: 'Buy back 10%', meta: `$${P.buybackCost}M now`, desc: 'Buy back part of the investor’s stake. Founders own 80% instead of 70%.' }];
+    return [hold, { v: 'bonus', label: 'Team bonus', meta: `$${P.bonusCost}M now`, desc: 'Reward the crew. Output up 10% in Round 6.' }];
+  }
+  const d = DECISIONS[R].find(x => x.key === key);
+  return d ? d.opts : [];
+}
+// Recurring choices (owner) every producing round.
+const RECURRING = [
+  { key: 'safety', owner: 'Operations', title: 'Safety program', show: st => st.round >= 3, opts: YN('Safety on', '$1M this round', 'No routine accidents.', 'Skip it', '35% chance of a $4M accident that cuts output 30%.'), def: 'yes' },
+  { key: 'protect', owner: 'CEO', title: 'Wetland protection', show: st => st.round >= 3 && st.site === 'ridge', opts: YN('Protect', '$1M this round', 'No wetland fines.', 'Skip it', 'Chance of a $4M fine (50%, or 20% with the pledge).'), def: 'yes' },
+];
+
+function p3Rng(s) { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return () => { h += 0x6D2B79F5; let t = h; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function p3New(team) {
+  const keys = Object.keys(P.crises);
+  return { team, round: 1, cash: P.start, site: null, surveyed: false, interviews: false, pledge: false, funding: 'none', transport: 'truck', marketing: false, rnd: false,
+    rigs: null, extend: false, insurance: false, cert: false, researched: false, customer: null, tier: null, pace: 'steady',
+    loanRepaid: false, buyback: false, bonusR6: false, incidents: 0, crisis: keys[Math.floor(p3Rng(team + ':crisis')() * keys.length)],
+    next: { buyCut: 0, priceAdd: 0, extraCost: 0 }, predictHits: 0, history: [], done: false };
+}
+// Purchases paid from cash on hand at the start of the round.
+function p3Upfront(st, d) {
+  const R = st.round; let u = 0;
+  if (R === 1) u += (P.sites[d.site] ? P.sites[d.site].license : 0) + (yes(d.survey) ? P.surveyCost : 0) + (yes(d.interviews) ? P.interviewCost : 0) + (yes(d.pledge) ? P.pledgeCost : 0);
+  if (R === 2) u += (d.transport === 'pipeline' ? P.transport.pipeline.cost : 0) + (yes(d.marketing) ? P.marketingCost : 0) + (yes(d.rnd) ? P.rndCost : 0);
+  if (R === 3) u += (d.rigs ? P.rigs[d.rigs].per100 * P.sites[st.site].advertised / 100 : 0) + (yes(d.extend) ? P.extendCost : 0);
+  if (R === 4) u += (yes(d.research) && !st.interviews ? P.researchCost : 0) + (d.customer === 'airlines' && !st.cert ? P.customers.airlines.certCost : 0);
+  if (R === 5) u += (yes(d.reassure) ? P.reassureCost : 0) + (d.capital === 'repay' && st.funding === 'loan' ? P.repayEarly : 0) + (d.capital === 'buyback' && st.funding === 'investor' ? P.buybackCost : 0) + (d.capital === 'bonus' && st.funding === 'none' ? P.bonusCost : 0);
+  if (R === 6 && d.card) u += (P.cards[d.card] ? P.cards[d.card].cost : 0) + (d.card !== 'sell' && yes(d.efficiency) ? P.efficiencyCost : 0) + (d.card !== 'sell' && yes(d.loyalty) ? P.loyaltyCost : 0);
+  return u;
+}
+function p3Play(st, d) {
+  const R = st.round, rand = p3Rng(st.team + ':' + R), log = [];
+  let out = 0, revenue = 0, pumping = 0, operating = P.overhead, penalties = 0, invest = p3Upfront(st, d), financing = 0;
+  const nxt = st.next; st.next = { buyCut: 0, priceAdd: 0, extraCost: 0 };
+  if (R === 1) {
+    st.site = d.site; st.surveyed = yes(d.survey); st.interviews = yes(d.interviews); st.pledge = yes(d.pledge);
+    log.push(`Licensed ${P.sites[d.site].name}.`);
+    if (st.surveyed) log.push(`Survey: ${P.sites.coast.name} really holds ${P.sites.coast.actual}k bbl a round, not ${P.sites.coast.advertised}k.`);
+    if (st.interviews) log.push('Customer interviews done: you now know how much each customer buys at each price.');
+    if (st.pledge) log.push('Community pledge signed.');
+  }
+  if (R === 2) {
+    st.funding = d.funding; financing = P.funding[d.funding].cash; st.transport = d.transport === 'pipeline' ? 'pipeline' : 'truck'; st.marketing = yes(d.marketing); st.rnd = yes(d.rnd);
+    if (financing) log.push(`${P.funding[d.funding].name}: +$${financing}M.`);
+    if (st.transport === 'pipeline') log.push('Pipeline built.');
+    if (st.marketing) log.push('Pre-launch campaign running.');
+    if (st.rnd) log.push('Geology partnership signed: pumping cost falls $4 a barrel from Round 4.');
+  }
+  if (R === 3) { st.rigs = d.rigs; st.extend = yes(d.extend); st.insurance = yes(d.insurance); if (st.extend) log.push('Field extended: output up 15% from Round 4.'); if (st.insurance) log.push('Insurance policy started.'); }
+  if (R === 4) { st.customer = d.customer; st.tier = d.tier; st.pace = d.pace === 'push' ? 'push' : 'steady'; if (yes(d.research)) st.researched = true; if (d.customer === 'airlines' && !st.cert) { st.cert = true; log.push('Fuel certified for airlines.'); } }
+  if (R === 5) {
+    if (d.capital === 'repay' && st.funding === 'loan') { st.loanRepaid = true; log.push(`Loan repaid early: $${P.repayEarly}M.`); }
+    if (d.capital === 'buyback' && st.funding === 'investor') { st.buyback = true; log.push('Bought back 10% of the company.'); }
+    if (d.capital === 'bonus' && st.funding === 'none') { st.bonusR6 = true; log.push('Team bonus paid: output up 10% next round.'); }
+  }
+  // Round 6 sale and negotiation
+  let selling = R === 6 && d.card === 'sell', cardEff = R === 6 ? d.card : null;
+  if (selling) {
+    let price = P.buyout;
+    if (d.negotiate === 'push') { if (p3Rng(st.team + ':negotiate')() < 0.5) { price = P.buyoutPush; log.push(`Negotiation worked: the buyer paid $${P.buyoutPush}M.`); } else { selling = false; cardEff = null; log.push('The buyer walked away. You played the round with no strategy card.'); } }
+    if (selling) { operating = 0; revenue = price; if (price === P.buyout) log.push(`Sold the company for $${P.buyout}M.`); }
+  }
+  if (!selling && R >= 3) {
+    const s = P.sites[st.site], push = R >= 4 && st.pace === 'push';
+    out = s.actual * P.rigs[st.rigs].output * (R >= 4 && st.extend ? 1 + P.extendBoost : 1) * (push ? 1 + P.pushOutput : 1) * (R === 6 && st.bonusR6 ? 1 + P.bonusBoost : 1);
+    operating += nxt.extraCost;
+    let crisisAccidentRisk = 0, traderShare = 0, traderPrice = P.wholesale;
+    if (R === 5) {
+      if (d.crisisCard && P.crises[d.crisisCard]) st.crisis = d.crisisCard;
+      const c = st.crisis, o = d.crisis; log.push(`CRISIS: ${P.crises[c].title}.`);
+      if (c === 'leak') {
+        if (o === 'a') { operating += 3; log.push('You cleaned up and apologized ($3M).'); }
+        if (o === 'b') { operating += 1; if (rand() < (st.pledge ? 0.25 : 0.5)) { penalties += 5; st.incidents++; log.push('The town found out and sued: $5M.'); } else log.push('The patch held. Nobody found out.'); }
+        if (o === 'c') { if (rand() < (st.pledge ? 0.4 : 0.7)) { penalties += 6; st.incidents++; st.next.buyCut = 0.25; log.push('It made the news: $6M fine, and your customer will buy 25% less next round.'); } else log.push('Nobody found out this time.'); }
+      }
+      if (c === 'strike') {
+        if (o === 'a') { operating += 2; st.next.extraCost = 1; log.push('Pay raised: $2M now, $1M next round.'); }
+        if (o === 'b') { operating += 1; out *= 0.8; log.push('Deal reached: $1M, output down 20%.'); }
+        if (o === 'c') { operating += 0.5; out *= 0.6; crisisAccidentRisk = st.pledge ? 0.15 : 0.3; log.push('Replacements hired: output down 40%.'); }
+      }
+      if (c === 'spike') {
+        if (o === 'a') { traderShare = 1; traderPrice = 95; st.next.buyCut = 0.3; log.push('Sold everything at $95. Your customer is unhappy.'); }
+        if (o === 'b') { st.next.priceAdd = 5; log.push('You stayed loyal. Your customer will pay $5 more per barrel next round.'); }
+        if (o === 'c') { traderShare = 0.5; traderPrice = 95; log.push('Sold half at $95.'); }
+      }
+      if (yes(d.reassure) && st.next.buyCut > 0) { st.next.buyCut = 0; log.push('Sales reassured the customer: no drop in orders next round.'); }
+    }
+    if (R === 6 && cardEff === 'expand') out *= 1.5;
+    if (yes(d.safety)) operating += P.safetyCost;
+    if (st.insurance) operating += P.insuranceCost;
+    const accChance = (yes(d.safety) ? 0 : P.accidentChance) + (push ? P.pushRisk : 0) + crisisAccidentRisk;
+    const cover = st.insurance ? 1 - P.insuranceCover : 1;
+    if (accChance > 0 && rand() < accChance) { const c = P.accidentCost * cover; penalties += c; out *= 1 - P.accidentCut; st.incidents++; log.push(`ACCIDENT: $${c.toFixed(1)}M${st.insurance ? ' after insurance' : ''}, output down 30%.`); }
+    if (s.risky) { if (yes(d.protect)) operating += P.protectCost; else if (rand() < (st.pledge ? P.fineChancePledge : P.fineChance)) { const c = P.fineCost * cover; penalties += c; st.incidents++; log.push(`WETLAND FINE: $${c.toFixed(1)}M${st.insurance ? ' after insurance' : ''}.`); } }
+    const perBbl = s.cost - (R >= 4 && st.rnd ? P.rndCut : 0) + (push ? P.pushCost : 0) - (R === 6 && yes(d.efficiency) ? P.efficiencyCut : 0) + P.transport[st.transport].perBbl;
+    pumping = out * perBbl / 1000;
+    // Sales
+    let custQ = 0, custP = 0, spot = out * traderShare, rest = out - spot;
+    if (R === 3) log.push(`No customers yet: sold ${Math.round(out)}k bbl to traders at $${P.wholesale}.`);
+    else if (rest > 0) {
+      const c = P.customers[st.customer];
+      let share = Math.min(1, c.buys[st.tier] + (st.marketing ? P.marketingBoost : 0)); custP = P.tiers[st.tier].price + c.bonus + nxt.priceAdd;
+      if (R === 6) {
+        custP -= P.competitorCut; log.push(`A competitor arrived: customer prices fell $${P.competitorCut} a barrel.`);
+        if (cardEff === 'war') { custP -= 10; share = 1; }
+        if (cardEff === 'brand') share = Math.min(1, share * 1.2);
+        if (cardEff === 'contract') { custP = 85 + nxt.priceAdd; share = 1; }
+        if (yes(d.loyalty) && cardEff !== 'war' && cardEff !== 'contract') share = Math.min(1, share + P.loyaltyBoost);
+      }
+      share *= 1 - nxt.buyCut;
+      custQ = rest * share; if (cardEff !== 'contract') custQ = Math.min(custQ, c.cap);
+    }
+    const whole = rest - custQ;
+    revenue = (custQ * custP + spot * traderPrice + whole * P.wholesale) / 1000;
+    if (R >= 4 && custQ + spot > 0) log.push(`Sold ${Math.round(custQ)}k bbl to ${P.customers[st.customer].name} at $${custP}${spot ? `, ${Math.round(spot)}k to traders at $${traderPrice}` : ''}${whole > 0.5 ? `, ${Math.round(whole)}k leftover to traders at $${P.wholesale}` : ''}.`);
+  }
+  const profit = revenue - pumping - operating - penalties;
+  let bonus = 0;
+  if (R >= 3 && typeof d.predict === 'number' && !isNaN(d.predict)) {
+    if (Math.abs(d.predict - profit) <= P.predictBand) { bonus = P.predictBonus; st.predictHits++; log.push(`Prediction hit: you said $${d.predict.toFixed(1)}M, actual $${profit.toFixed(1)}M. +$${P.predictBonus}M investor confidence.`); }
+    else log.push(`Prediction missed: you said $${d.predict.toFixed(1)}M, actual $${profit.toFixed(1)}M.`);
+  }
+  st.cash += profit + bonus - invest + financing;
+  const rec = { round: R, out, revenue, pumping, operating, penalties, profit, bonus, invest, financing, cash: st.cash, log, why: d.why || '', predict: d.predict, choice: d };
+  st.history.push(rec);
+  if (R === 6) {
+    st.done = true; const f = P.funding[st.funding];
+    st.clean = st.incidents === 0 ? P.cleanBonus : 0;
+    st.companyValue = st.cash + st.clean - (st.loanRepaid ? 0 : f.repay);
+    st.ownership = 1 - f.share + (st.buyback ? P.buybackShare : 0);
+    st.final = st.companyValue > 0 ? st.companyValue * st.ownership : st.companyValue;
+  }
+  st.round++;
+  return rec;
+}
+if (typeof module !== 'undefined') module.exports = { P, DECISIONS, RECURRING, decisionOptions, p3New, p3Play, p3Upfront, yes };
+</script>
+<script>
+const $=s=>document.querySelector(s), app=$('#app');
+const m=x=>(x<0?'−':'')+'$'+Math.abs(x).toFixed(1)+'M';
+const cell=x=>`<td class="${x<-0.005?'neg':''}">${Math.abs(x)<0.005?'–':(x<0?'(':'')+Math.abs(x).toFixed(1)+(x<0?')':'')}</td>`;
+const esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+const slug=t=>String(t).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'team';
+const ROUNDS=[
+ ['Explore','Fiteen has been found in three places. Four people decide this round, and every purchase comes out of the same $12M, so agree on a budget before anyone commits.','Explorer'],
+ ['Fund','Next round you build rigs, and you can only buy what you can pay for. Finance picks the funding. Operations, Sales and the Explorer each have an investment that competes for the same cash.','Finance'],
+ ['Build','Build the field. All fuel sells to traders at $60 a barrel this round. Rigs, a field extension and insurance all compete for cash.','Operations'],
+ ['Sell','Customers are ready. Sales picks the customer, Finance sets the price and Operations sets the pace. Fuel the customer doesn\u2019t buy goes to traders at $60.','Sales'],
+ ['Crisis','Something went wrong. The CEO responds, Sales manages the customer, and Finance decides what to do with the cash.','CEO'],
+ ['Compete','A competitor cuts customer prices $15 a barrel. The CEO picks the strategy, and Operations, Sales and Finance each add a move. If the CEO sells, money the others spend this round is wasted, so coordinate.','CEO'],
+];
+
+/* ---------- state ---------- */
+let mode='lobby', game=null, st=null;
+let db=null, live=false, canWrite=true, dbRef=null, unsubGame=null, unsubBoard=null, board=null, connecting=true;
+let saveTimer=null, dirtyLocal=false, chain=Promise.resolve(), confirmReset=false;
+let userNs=null, myId=null, me={name:'',roles:[]};
+const ROLES=[['Explorer','Leads Round 1. Decides the site, a research partnership and a field extension'],['Finance','Leads Round 2. Decides funding, price, money moves, the buyout deal and every profit prediction'],['Operations','Leads Round 3. Decides the survey, transport, rigs, pace, efficiency and safety'],['Sales','Leads Round 4. Decides interviews, marketing, the customer, reassurance and loyalty'],['CEO','Leads Rounds 5 and 6. Decides the pledge, insurance, protection, the crisis and the strategy']];
+const ROLE_KEYS=ROLES.map(r=>r[0]), MAX_ROLES=2, MAX_PER_ROLE=2;
+const leadOf=R=>ROUNDS[R-1][2];
+function cleanRoster(r){ const out={}; if(r&&typeof r==='object') for(const [k,v] of Object.entries(r)){ if(!v||typeof v!=='object') continue; const roles=Array.isArray(v.roles)?v.roles.filter(x=>ROLE_KEYS.includes(x)).slice(0,MAX_ROLES):[]; if(!roles.length) continue; out[k]={name:String(v.name||'Teammate').slice(0,40),roles}; } return out; }
+const holders=(role,roster)=>Object.entries(roster).filter(([k,v])=>v.roles.includes(role));
+async function getMyId(){ if(myId) return myId; try{ if(userNs){ const i=await userNs.id(); if(i) return myId=i; } }catch(e){} try{ let i=localStorage.getItem('novium-pid'); if(!i){ i='p'+Math.random().toString(36).slice(2,10); localStorage.setItem('novium-pid',i);} return myId=i; }catch(e){ return myId='p'+Math.random().toString(36).slice(2,10); } }
+const enqueue=fn=>(chain=chain.then(fn,fn));
+
+function replay(team,decisions){
+ const s=p3New(team);
+ for(const d of decisions||[]){ if(s.done) break; try{ p3Play(s,{...d,predict:typeof d.predict==='number'?d.predict:undefined}); }catch(e){ break; } }
+ return s;
+}
+function rebuild(){
+ st=replay(game.team,game.decisions);
+ const dr=game.draft||{};
+ st.researchBought=st.round===4&&!!dr.research;
+ if(st.round===5&&dr.crisisCard&&P.crises[dr.crisisCard]) st.crisis=dr.crisisCard;
+}
+
+/* ---------- live data ---------- */
+async function init(){
+ const fb=firebaseDb();
+ if(fb){ db=fb; live=true; canWrite=true; }
+ else { try{ db=window.claude?await claude.use('db'):null; }catch(e){ db=null; } }
+ if(db&&!fb){
+  live=true;
+  try{ const user=await claude.use('user'); userNs=user; const w=user?await user.can('data.write'):null; canWrite=w!==false; }catch(e){ canWrite=true; }
+ }
+ connecting=false;
+ if(mode==='lobby'){ subscribeBoard(); renderLobbyStatus(); }
+}
+function subscribeBoard(){
+ if(!live||unsubBoard) return;
+ unsubBoard=db.collection('games3').limit(200).onSnapshot(qs=>{
+  board=qs.docs.map(d=>{const v=d.data()||{};const s=replay(String(v.team||d.id).slice(0,60),Array.isArray(v.decisions)?v.decisions:[]);
+   return {team:s.team,round:s.done?6:s.round-1,cash:s.cash,final:s.done?s.final:null,done:s.done};})
+   .sort((a,b)=>(b.final??b.cash)-(a.final??a.cash));
+  renderBoard();
+ },()=>{board=null;renderBoard();});
+}
+function stopBoard(){ if(unsubBoard){unsubBoard();unsubBoard=null;} }
+function writeFailed(e){
+ if(e&&e.code==='invalid_argument'){ canWrite=false; render(); return; }
+ if(e&&e.code==='quota_exceeded'){ flash('The class game store is full. Ask the owner to clear old games.'); return; }
+ flash('That change didn’t save. Check your connection and try again.');
+}
+function flash(t){ const w=$('#warn'); if(w) w.textContent=t; }
+function queueDraftSave(now){
+ if(!live||!canWrite||!dbRef) return;
+ dirtyLocal=true; clearTimeout(saveTimer);
+ saveTimer=setTimeout(()=>{ saveTimer=null; const draft={...game.draft};
+  enqueue(async()=>{ try{ await dbRef.update({draft}); }catch(e){ writeFailed(e); } finally{ if(!saveTimer) dirtyLocal=false; } });
+ }, now?0:500);
+}
+async function joinGame(name){
+ const team=name.trim().slice(0,60)||'Team';
+ try{ localStorage.setItem('novium-team',team); }catch(e){}
+ stopBoard();
+ await getMyId(); try{ me.name=localStorage.getItem('novium-name')||''; }catch(e){}
+ if(!live){ game={team,decisions:[],draft:{},roster:{}}; mode='roles'; rebuild(); render(); return; }
+ dbRef=db.doc('games3/'+slug(team));
+ let snap=null; try{ snap=await dbRef.get(); }catch(e){}
+ if(snap&&snap.exists){ const v=snap.data(); game={team:String(v.team||team).slice(0,60),decisions:Array.isArray(v.decisions)?v.decisions:[],draft:(v.draft&&typeof v.draft==='object')?v.draft:{},roster:cleanRoster(v.roster)}; }
+ else { game={team,decisions:[],draft:{},roster:{}}; if(canWrite){ try{ await enqueue(()=>dbRef.set({team,decisions:[],draft:null,roster:{},updatedAt:Date.now()})); }catch(e){ if(e&&e.code==='invalid_argument') canWrite=false; } } }
+ const mine=game.roster[myId]; if(mine){ me={name:mine.name,roles:[...mine.roles]}; }
+ mode=canWrite&&!mine?'roles':'game'; rebuild(); render();
+ unsubGame=dbRef.onSnapshot(snap=>{
+  if(!snap.exists) return;
+  const v=snap.data()||{}, decs=Array.isArray(v.decisions)?v.decisions:[], draft=(v.draft&&typeof v.draft==='object')?v.draft:{};
+  const roster=cleanRoster(v.roster), rosterChanged=JSON.stringify(roster)!==JSON.stringify(game.roster||{});
+  const structural=decs.length!==game.decisions.length||!!draft.research!==!!(game.draft||{}).research||(draft.crisisCard||'')!==((game.draft||{}).crisisCard||'');
+  game.roster=roster;
+  if(rosterChanged){ if(mode==='roles') renderRoleCards(); else if(mode==='game'){ const act=document.activeElement&&document.activeElement.id; render(); if(act&&$('#'+act)) $('#'+act).focus(); } }
+  if(!structural&&(snap.metadata.hasPendingWrites||dirtyLocal)) return;
+  game={team:game.team,decisions:decs,draft,roster};
+  if(structural){ rebuild(); if(mode==='game') render(); } else if(mode==='game'){ applyDraft(draft); check(); }
+ },()=>{ live=false; render(); });
+}
+function leaveGame(){
+ if(unsubGame){unsubGame();unsubGame=null;}
+ clearTimeout(saveTimer); saveTimer=null; dirtyLocal=false;
+ dbRef=null; game=null; st=null; mode='lobby'; confirmReset=false; render(); subscribeBoard();
+}
+
+/* ---------- views ---------- */
+const card=(name,val,title,meta,why,checked,disabled)=>`<label class="card ${disabled?'dis':''}"><input type="radio" name="${name}" value="${val}" ${checked?'checked':''} ${disabled?'disabled':''}><b>${title}</b><span class="meta">${meta}</span>${why?`<span class="why">${why}</span>`:''}</label>`;
+
+function renderLobby(){
+ let last='Team Basalt'; try{ last=localStorage.getItem('novium-team')||last; }catch(e){}
+ app.innerHTML=`<div class="lobby"><div class="start">
+ <h1><small>Team simulation · 6 rounds · about 75 minutes</small>Fiteen Frontier</h1>
+ <p>Your team discovered <b>Fiteen</b>, a new fuel. You have <b>$12M</b>. Find it, fund it, pump it, sell it, handle a crisis and face a competitor. The team whose founders end up with the most money wins.</p>
+ <p>Every round has <b>3\u20134 decisions, each owned by a role</b>. Only the owner can change their decision, but everyone sees it live, and cash is shared. Talk before you click.</p>
+ <p>From Round 3 on, Finance <b>predicts the team\u2019s profit</b> before running. Land within $1M and investors reward you with $0.5M. Every round, you write one line on <b>why</b> you made your choice.</p>
+ <div class="roles"><div><b>Explorer</b><br>Leads Round 1</div><div><b>Finance</b><br>Leads Round 2, predictions</div><div><b>Operations</b><br>Leads Round 3</div><div><b>Sales</b><br>Leads Round 4</div><div><b>CEO</b><br>Leads Rounds 5 and 6</div></div>
+ <p class="note">After you join, everyone picks a role. Fewer than 5 people: some take two. More than 5: two can share one.</p>
+ <label for="team" style="flex-direction:column;align-items:flex-start;gap:4px"><h3 style="margin:0">Team name</h3><input id="team" class="textin" value="${esc(last)}"></label>
+ <p class="note" id="lobbyStatus"></p>
+ <div><button class="go" id="begin">Join team game</button></div></div>
+ <aside class="board" id="board"></aside></div>`;
+ $('#begin').onclick=()=>joinGame($('#team').value);
+ $('#team').addEventListener('keydown',e=>{if(e.key==='Enter')joinGame($('#team').value)});
+ renderLobbyStatus(); renderBoard();
+}
+function renderLobbyStatus(){
+ const el=$('#lobbyStatus'); if(!el) return;
+ el.textContent=connecting?'Connecting to the class game…':live?(canWrite?'Everyone who joins the same team name shares one live game. Choices and results update on every screen.':'You can watch any team’s game live. Only people the owner invited as editors can make choices.'):'Live team play isn’t connected right now. You can still play on this device.';
+ const b=$('#begin'); if(b) b.textContent=live?(canWrite?'Join team game':'Watch team game'):'Start game';
+}
+function renderBoard(){
+ const el=$('#board'); if(!el) return;
+ if(!live){ el.innerHTML=`<h3>Class leaderboard</h3><p class="note">${connecting?'Connecting…':'The live leaderboard appears when live play is connected.'}</p>`; return; }
+ if(!board){ el.innerHTML=`<h3>Class leaderboard · live</h3><p class="note">Loading teams…</p>`; return; }
+ if(!board.length){ el.innerHTML=`<h3>Class leaderboard · live</h3><p class="note">No teams yet. Enter a team name and join to start the first game.</p>`; return; }
+ el.innerHTML=`<h3>Class leaderboard · live</h3><div class="tbl"><table><thead><tr><th>#</th><th>Team</th><th>Rounds done</th><th>Cash</th><th>Final value</th></tr></thead><tbody>
+ ${board.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.team)}</td><td>${r.round} of 6</td>${cell(r.cash)}<td>${r.final==null?'–':m(r.final)}</td></tr>`).join('')}</tbody></table></div>
+ <p class="note">Ranked by final value, or current cash for teams still playing. Type a team’s exact name in the box to join or watch it.</p>`;
+}
+
+function canEditSlot(owner){ if(!canWrite) return false; if(!live) return true; if(me.roles.includes(owner)) return true; return !holders(owner,game.roster||{}).length; }
+function slotHtml(dec,opts){
+ const editable=canEditSlot(dec.owner), mine=me.roles.includes(dec.owner);
+ return `<fieldset class="dec${mine?' mine':''}"><legend>${dec.title}</legend><span class="owner">${dec.owner} decides${mine?' (you)':editable?'':' · view only'}</span>
+ <div class="cards">${opts.map(o=>card('d_'+dec.key,o.v,o.label,o.meta,o.desc,o.v===dec.def,!editable)).join('')}</div></fieldset>`;
+}
+function roundSlots(R){ return (DECISIONS[R]||[]).map(d=>({...d,opts:decisionOptions(st,R,d.key)})); }
+function recurringSlots(){ return RECURRING.filter(r=>r.show(st)); }
+function decisionView(){
+ const R=st.round, s=st.site&&P.sites[st.site];
+ let h=`<div><h3>Round ${R} of 6 · led by ${ROUNDS[R-1][2]}</h3><h2>${ROUNDS[R-1][0]}</h2><p class="brief">${ROUNDS[R-1][1]}</p></div>`;
+ let slots=roundSlots(R);
+ if(R===2) h+=`<p class="note">For ${s.name}, Round 3 rigs cost ${m(P.rigs.starter.per100*s.advertised/100)} (starter) or ${m(P.rigs.full.per100*s.advertised/100)} (full), paid from cash on hand. After this round’s $1M overhead you’ll have ${m(st.cash-1)} plus any new funding, minus whatever you buy now.</p>`;
+ if(R===3) slots=slots.map(d=>d.key!=='rigs'?d:{...d,opts:d.opts.map(o=>({...o,meta:`${m(P.rigs[o.v].per100*s.advertised/100)} for ${s.name}`}))});
+ if(R===4){
+  const show=st.interviews||st.researchBought, pct=(c,t)=>show?`buys ${Math.round(Math.min(1,P.customers[c].buys[t]+(st.marketing?P.marketingBoost:0))*100)}%`:'share unknown';
+  h+=`<fieldset><legend>What customers will buy</legend>${st.interviews?`<p class="note">From your Round 1 customer interviews${st.marketing?', including the boost from your pre-launch campaign':''}.</p>`:show?`<p class="note">Research bought ($0.5M, paid when you run this round).</p>`:`<div class="row"><button class="alt" id="research">Buy market research ($0.5M)</button><span class="note">Shows how much of your fuel each customer buys at each price.</span></div>`}
+  <div class="tbl"><table style="margin-top:6px"><thead><tr><th>Price level</th>${Object.values(P.tiers).map(t=>`<th>${t.name} $${t.price}</th>`).join('')}</tr></thead><tbody>
+  ${['utilities','airlines'].map(c=>`<tr><td>${P.customers[c].name}${c==='airlines'?' (+$15, max 150k)':''}</td>${Object.keys(P.tiers).map(t=>`<td>${pct(c,t)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+  <p class="note">Customer, price and pace stay the same for Rounds 5 and 6 unless a card changes them.</p></fieldset>`;
+ }
+ if(R===5){
+  const c=P.crises[st.crisis];
+  h+=`<div class="crisis"><b>${c.title}</b><p class="brief" style="margin-top:4px">${c.text}</p></div>
+  <div class="row small"><label for="crisisCard">Instructor: set the crisis card for the class</label><select id="crisisCard">${Object.entries(P.crises).map(([k,v])=>`<option value="${k}" ${k===st.crisis?'selected':''}>${v.title}</option>`).join('')}</select></div>`;
+ }
+ h+=slots.map(d=>slotHtml(d,d.opts)).join('');
+ const rec=recurringSlots();
+ if(rec.length) h+=`<h3 style="margin:4px 0 0">Every round from now on</h3>`+rec.map(r=>slotHtml(r,r.opts)).join('')+`<p class="note">Overhead is $1M every round${st.insurance?', plus $0.5M insurance':''}.</p>`;
+ const predEdit=canEditSlot('Finance');
+ h+=`<div class="think"><h3>Team thinking</h3>
+  ${R>=3?`<div class="row"><label for="predict">Predicted profit this round ($M) · <span class="owner">Finance decides${me.roles.includes('Finance')?' (you)':predEdit?'':' · view only'}</span></label><input type="number" id="predict" step="0.1" placeholder="e.g. 4.5" ${predEdit?'':'disabled'}></div><p class="note">Profit = sales − pumping and transport − running costs − accidents and fines. Purchases don’t count. Within $1M earns +$0.5M.</p>`:''}
+  <label for="why" style="flex-direction:column;align-items:flex-start;gap:4px">Why did the team choose this? (one or two sentences, anyone can write)<textarea id="why" placeholder="We chose … because …"></textarea></label></div>
+  <p class="warn" id="warn"></p>
+  <div class="row"><button class="go" id="run" disabled>Run Round ${R}</button><span class="note" id="upfront"></span></div>`;
+ return h;
+}
+
+/* ---------- draft <-> form ---------- */
+function slotKeys(){ return st?[...roundSlots(st.round).map(d=>d.key),...recurringSlots().map(r=>r.key)]:[]; }
+function readDraft(){
+ const dr={research:!!st.researchBought};
+ for(const k of slotKeys()){ const el=document.querySelector(`input[name="d_${k}"]:checked`); if(el) dr[k]=el.value; }
+ const pr=$('#predict'); if(pr) dr.predict=pr.value;
+ const why=$('#why'); if(why) dr.why=why.value;
+ if($('#crisisCard')) dr.crisisCard=$('#crisisCard').value;
+ return dr;
+}
+function applyDraft(dr){
+ if(!dr) return; const act=document.activeElement;
+ for(const k of slotKeys()){ if(typeof dr[k]!=='string') continue; const el=document.querySelector(`input[name="d_${k}"][value="${CSS.escape(dr[k])}"]`); if(el) el.checked=true; }
+ const pr=$('#predict'); if(pr&&typeof dr.predict==='string'&&pr!==act) pr.value=dr.predict;
+ const why=$('#why'); if(why&&typeof dr.why==='string'&&why!==act) why.value=dr.why.slice(0,600);
+}
+function readD(){
+ const dr=readDraft(), d={};
+ for(const s of [...roundSlots(st.round),...recurringSlots()]) d[s.key]=typeof dr[s.key]==='string'?dr[s.key]:s.def;
+ for(const r of RECURRING) if(!(r.key in d)) d[r.key]='no';
+ d.research=st.researchBought?'yes':'no';
+ d.why=(dr.why||'').trim().slice(0,600); d.predict=null;
+ if(dr.predict!==undefined&&dr.predict!==''&&!isNaN(parseFloat(dr.predict))) d.predict=parseFloat(dr.predict);
+ if(dr.crisisCard) d.crisisCard=dr.crisisCard;
+ d.by=me.name?`${me.name} (${leadOf(st.round)})`:'';
+ return d;
+}
+function check(){
+ if(!$('#run')) return;
+ const d=readD(), R=st.round, up=p3Upfront(st,{...d,predict:undefined});
+ let w='';
+ if(up>0&&up>st.cash+1e-9) w=`This round’s purchases add up to ${m(up)}, but the team only has ${m(st.cash)}. Agree on what to drop.`;
+ else if(R>=3&&d.predict===null) w='Finance needs to enter the predicted profit.';
+ else if(d.why.length<10) w='Write a sentence on why the team chose this.';
+ $('#warn').textContent=up>0&&up>st.cash+1e-9?w:'';
+ const block=runBlock();
+ $('#upfront').textContent=(block?block+' ':'')+(up>0?`Purchases this round: ${m(up)} of the team’s ${m(st.cash)}`:'');
+ $('#run').disabled=!!w||!!block; $('#run').title=w||block;
+}
+/* ---------- results ---------- */
+function optLabel(stAt,R,key,v){ const o=(decisionOptions(stAt,R,key)||[]).find(x=>x.v===v); return o?o.label:String(v); }
+function summary(h){
+ const c=h.choice||{}, R=h.round, before=replay(game.team,game.decisions.slice(0,R-1));
+ if(R===5&&c.crisisCard&&P.crises[c.crisisCard]) before.crisis=c.crisisCard;
+ const parts=(DECISIONS[R]||[]).filter(d=>!(R===6&&c.card!=='sell'&&d.key==='negotiate')&&!(R===6&&c.card==='sell'&&(d.key==='efficiency'||d.key==='loyalty'))).map(d=>`${d.owner}: ${optLabel(before,R,d.key,c[d.key])}`);
+ if(R===5) parts[0]=`CEO: ${P.crises[before.crisis].title}, ${optLabel(before,R,'crisis',c.crisis)}`;
+ if(R>=3&&!(R===6&&c.card==='sell')) parts.push(`safety ${yes(c.safety)?'on':'off'}${st.site==='ridge'?`, protection ${yes(c.protect)?'on':'off'}`:''}`);
+ if(R===4&&yes(c.research)) parts.push('bought research');
+ return parts.join(' · ');
+}
+function ledger(){
+ const H=st.history, N=[0,1,2,3,4,5];
+ const rows=[['Fuel pumped (k bbl)',h=>h.out,'n'],['Sales',h=>h.revenue],['Pumping & transport',h=>-h.pumping],['Running costs',h=>-h.operating],['Accidents & fines',h=>-h.penalties],['Profit',h=>h.profit,'key'],['Prediction bonus',h=>h.bonus],['Purchases',h=>-h.invest],['New funding',h=>h.financing],['Cash at end',h=>h.cash,'key']];
+ return `<h3>Results · $M</h3><div class="tbl"><table><thead><tr><th></th>${N.map(i=>`<th>R${i+1}</th>`).join('')}</tr></thead><tbody>
+ ${rows.map(([l,f,c])=>`<tr class="${c==='key'?'key':''}"><td>${l}</td>${N.map(i=>H[i]?(c==='n'?`<td>${Math.round(f(H[i]))}</td>`:cell(f(H[i]))):'<td></td>').join('')}</tr>`).join('')}
+ </tbody></table></div><p class="note" style="margin-top:8px">Running costs = overhead, safety, protection, insurance and crisis costs. Purchases = everything bought up front: licenses, survey, interviews, pledge, pipeline, marketing, research partnership, rigs, extension, certification, crisis moves and Round 6 moves.</p>`;
+}
+function logView(){
+ if(!st.history.length) return `<div class="log"><div class="r">What happens each round will show up here.</div></div>`;
+ return `<h3 style="margin-top:16px">What happened</h3><div class="log">${st.history.slice().reverse().map(h=>h.log.map(l=>`<div class="${/ACCIDENT|FINE|sued|news|missed/.test(l)?'bad':/CRISIS|competitor|Survey|hit/.test(l)?'ev':''}"><span class="r">R${h.round}</span> ${esc(l)}</div>`).join('')).join('')}</div>`;
+}
+/* ---------- role report (end of game) ---------- */
+function whatIf(decs){ const r=replayChecked(game.team,decs); return {final:r.s.done?r.s.final:NaN,blocked:r.blocked}; }
+function roleAlts(role,decs){
+ const list=[];
+ for(let R=1;R<=6;R++) for(const d of (DECISIONS[R]||[])){ if(d.owner!==role) continue; const stAt=replay(game.team,decs.slice(0,R-1)); if(R===5&&decs[4].crisisCard) stAt.crisis=decs[4].crisisCard;
+  for(const o of decisionOptions(stAt,R,d.key)){ if(o.v===decs[R-1][d.key]) continue; if(d.info&&o.v==='no') continue; if(R===6&&d.key==='negotiate'&&decs[5].card!=='sell') continue;
+   const alt=decs.map(x=>({...x})); alt[R-1][d.key]=o.v; if(d.key==='site'&&o.v==='ridge') alt.forEach((x,i)=>{ if(i>=2) x.protect='yes'; });
+   const r=whatIf(alt); if(!isNaN(r.final)&&!r.blocked) list.push({label:`${d.title.replace(/\?$/,'')} → ${o.label} (Round ${R})`,final:r.final}); } }
+ for(const rc of RECURRING){ if(rc.owner!==role) continue; if(rc.key==='protect'&&st.site!=='ridge') continue;
+  for(const v of ['yes','no']){ const alt=decs.map((x,i)=>i>=2?{...x,[rc.key]:v}:{...x}); const r=whatIf(alt); if(!isNaN(r.final)&&!r.blocked) list.push({label:`${rc.title} ${v==='yes'?'on':'off'} every round`,final:r.final}); } }
+ return list;
+}
+function roleReport(){
+ const decs=game.decisions.slice(0,6), H=st.history, site=P.sites[st.site];
+ const base=whatIf(decs).final, roster=game.roster||{};
+ const who=role=>{ const names=holders(role,roster).map(([k,v])=>v.name); return names.length?names.join(' & '):'Unassigned'; };
+ const diff=x=>(x>=0?'+':'−')+'$'+Math.abs(x).toFixed(1)+'M';
+ const judge=b=>(!b||b.final-base<0.5)?['top','Best call']:(b.final-base<4)?['mid','Close']:['low','Room to grow'];
+ const chose=role=>{ const items=[]; for(let R=1;R<=6;R++){ const stAt=replay(game.team,decs.slice(0,R-1)); if(R===5&&decs[4]&&decs[4].crisisCard) stAt.crisis=decs[4].crisisCard; for(const d of (DECISIONS[R]||[])) if(d.owner===role&&decs[R-1]&&!(R===6&&d.key==='negotiate'&&decs[5].card!=='sell')&&!(R===6&&decs[5].card==='sell'&&(d.key==='efficiency'||d.key==='loyalty'))) items.push(`R${R} ${optLabel(stAt,R,d.key,decs[R-1][d.key])}`); } return items.join(' · '); };
+ const totalOut=H.reduce((a,h)=>a+h.out,0), log=H.flatMap(h=>h.log);
+ const nAcc=log.filter(l=>/^ACCIDENT/.test(l)).length, nFine=log.filter(l=>/^WETLAND FINE/.test(l)).length;
+ const specs={
+  Explorer:{help:`Set the team’s earning power: ${site.name} produced ${Math.round(totalOut)}k barrels.`,good:[],other:[]},
+  Finance:{help:decs[1].funding==='none'?'Kept the founders at 100% ownership.':`Brought in ${m(P.funding[decs[1].funding].cash)} to build with.`,good:[],other:[]},
+  Operations:{help:`Pumped ${Math.round(totalOut)}k barrels with ${nAcc} accident${nAcc===1?'':'s'}${site.risky?` and ${nFine} wetland fine${nFine===1?'':'s'}`:''}.`,good:[],other:[]},
+  Sales:{help:`Brought in ${m(H.slice(3).reduce((a,h)=>a+h.revenue,0))} in sales over Rounds 4–6.`,good:[],other:[]},
+  CEO:{help:`Steered the team to ${m(st.final)} for the founders.`,good:[],other:[]},
+ };
+ if(st.site==='ridge') specs.Explorer.good.push('Picked the biggest site in the game.');
+ if(st.site==='coast'&&!st.surveyed) specs.Explorer.other.push('Coastal Shelf held 100k barrels, not 250k. Nobody checked first.');
+ if(st.rnd) specs.Explorer.good.push('The geology partnership cut pumping costs $4 a barrel.');
+ if(st.extend) specs.Explorer.good.push('Extended the field for 15% more output.');
+ const preds=H.filter(h=>typeof h.predict==='number');
+ if(preds.length){ const err=preds.reduce((a,h)=>a+Math.abs(h.predict-h.profit),0)/preds.length; (st.predictHits>=3?specs.Finance.good:specs.Finance.other).push(`Predictions: ${st.predictHits} of 4 within $1M, off by ${m(err)} on average.`); }
+ if(decs[1].funding==='investor') specs.Finance.other.push(`The investor’s share of the final company was worth ${m(Math.max(0,st.companyValue)*(1-st.ownership))}.`);
+ if(st.loanRepaid) specs.Finance.good.push('Repaid the loan early and saved $1M.');
+ if(st.surveyed) specs.Operations.good.push('Surveyed before the team spent on a license.');
+ if(st.rigs==='full') specs.Operations.good.push('Ran the field at full capacity.'); else specs.Operations.other.push('Starter rigs kept the field at half capacity.');
+ if(nAcc===0) specs.Operations.good.push('No field accidents.'); else specs.Operations.other.push(`${nAcc} field accident${nAcc===1?'':'s'} cost money and output.`);
+ if(st.interviews||st.researched) specs.Sales.good.push('Priced with real data on what customers buy.'); else specs.Sales.other.push('Chose a price without knowing how much customers would buy.');
+ if(st.marketing) specs.Sales.good.push('The pre-launch campaign lifted orders 10%.');
+ const h5=H[4];
+ if(h5&&h5.log.some(l=>/sued|made the news/.test(l))) specs.CEO.other.push('The crisis response led to a lawsuit or fine.');
+ else specs.CEO.good.push(`Handled the ${P.crises[st.crisis].title.toLowerCase()} without lawsuits or crisis fines.`);
+ if(st.pledge) specs.CEO.good.push('The community pledge lowered fine and crisis risks.');
+ if(decs[5].card==='sell') specs.CEO.good.push('Sold the company before the competitor squeezed prices.');
+ if(nFine) specs.CEO.other.push(`Skipping wetland protection led to ${nFine} fine${nFine===1?'':'s'}.`);
+ const cards=ROLE_KEYS.map(role=>{ const list=roleAlts(role,decs).sort((a,b)=>b.final-a.final), best=list[0]; let v=judge(best);
+  const skipped=role==='Operations'&&decs.slice(2).some(d=>d&&d.card!=='sell'&&!yes(d.safety))&&nAcc===0; if(skipped&&v[0]==='top') v=['mid','Risky'];
+  if(skipped) specs.Operations.other.push('Skipped safety and got lucky.');
+  const alt=best&&best.final-base>=0.5?`<b>Another way:</b> ${best.label} would have ended at ${m(best.final)} for the founders (${diff(best.final-base)}), with everything else the same.`:'<b>Best available calls.</b> No other choice this role made would have finished more than $0.5M higher.';
+  return {role,who:who(role),chose:chose(role),help:specs[role].help,good:specs[role].good,other:specs[role].other,alt,v}; });
+ return {base,cards};
+}
+function roleReportHtml(){
+ let r; try{ r=roleReport(); }catch(e){ return ''; }
+ return `<fieldset><legend>Role report</legend>
+ <p class="note" style="margin:0">\u201cAnother way\u201d replays your exact game with one decision changed and the same luck, not counting prediction bonuses (baseline ${m(r.base)}).</p>
+ <div class="rolereport">${r.cards.map(c=>`<div class="rr"><header><b>${c.role}</b><span class="verdict ${c.v[0]}">${c.v[1]}</span></header>
+ <span class="who">${esc(c.who)}</span>
+ <p class="note" style="margin:0"><b>Decided:</b> ${esc(c.chose)}</p>
+ <p style="margin:0;font-size:.9rem"><b>Helped the team:</b> ${c.help}</p>
+ ${c.good.length?`<ul class="fb good">${c.good.map(x=>`<li>${x}</li>`).join('')}</ul>`:''}
+ ${c.other.length?`<ul class="fb bad">${c.other.map(x=>`<li>${x}</li>`).join('')}</ul>`:''}
+ <ul class="fb tip"><li>${c.alt}</li></ul></div>`).join('')}</div></fieldset>`;
+}
+function roleReportText(){
+ let r; try{ r=roleReport(); }catch(e){ return ''; }
+ const strip=s=>s.replace(/<[^>]+>/g,'');
+ return '\n\nROLE REPORT\n'+r.cards.map(c=>`${c.role} (${c.who}) — ${c.v[1]}\n  Decided: ${c.chose}\n  Helped the team: ${strip(c.help)}\n${[...c.good.map(x=>'  + '+strip(x)),...c.other.map(x=>'  - '+strip(x))].join('\n')}\n  ${strip(c.alt)}`).join('\n');
+}
+function endView(){
+ const f=P.funding[st.funding], gain=st.final-P.start;
+ const text=`${st.team} — Fiteen Frontier\nFounders' final value: ${m(st.final)} (started with $12.0M)\nPredictions within $1M: ${st.predictHits} of 4\n\n`+st.history.map(h=>`Round ${h.round} (${ROUNDS[h.round-1][0]}): ${summary(h)}${h.choice&&h.choice.by?` — run by ${h.choice.by}`:''}\n  Why: ${h.why}${typeof h.predict==='number'?`\n  Predicted ${m(h.predict)}, actual ${m(h.profit)}`:''}`).join('\n')+roleReportText();
+ return `<div><h3>Game over</h3><h2>${gain>20?'Big win.':gain>10?'Strong business.':gain>0?'You made some money.':'You lost money.'}</h2></div>
+ <div class="exit">${[['Cash after Round 6',m(st.cash)],['Clean-record bonus',m(st.clean)],['Loan repayment',m(-f.repay)],['Company value',m(st.companyValue)],['Founders own',Math.round(st.ownership*100)+'%'],['Founders’ final value',m(st.final)],['Predictions within $1M',st.predictHits+' of 4']].map(([a,b])=>`<div class="kpi"><span>${a}</span><strong>${b}</strong></div>`).join('')}</div>
+ ${st.clean?'':`<p class="note">No clean-record bonus: ${st.incidents} accident${st.incidents===1?'':'s'}, fine${st.incidents===1?'':'s'} or lawsuit${st.incidents===1?'':'s'}.</p>`}
+ ${roleReportHtml()}
+ <fieldset><legend>Your decision log</legend><div class="decisions">${st.history.map(h=>`<div><span class="r">Round ${h.round} · ${ROUNDS[h.round-1][0]}</span><br><b>${esc(summary(h))}</b>${h.choice&&h.choice.by?`<span class="note"> · run by ${esc(h.choice.by)}</span>`:''}<br>${esc(h.why)}${typeof h.predict==='number'?`<br><span class="note">Predicted ${m(h.predict)}, actual ${m(h.profit)}</span>`:''}</div>`).join('')}</div>
+ <div class="row"><button class="alt" id="copy">Copy decision log</button><span class="note" id="cp">Paste it into your team write-up or send it to your instructor.</span></div></fieldset>
+ <fieldset><legend>Team debrief</legend><ol class="debrief"><li>Which decision made you the most money? Find it in the results table.</li><li>Was your funding choice right? Work out what you’d have ended with under a different option.</li><li>Which prediction missed by the most, and what did you overlook?</li><li>Would you make the same crisis call if the outcome were public?</li></ol></fieldset>
+ <textarea id="logtext" hidden readonly>${esc(text)}</textarea>`;
+}
+/* ---------- halftime report (after Round 3) ---------- */
+const R4_DEFAULT={customer:'utilities',tier:'mid',pace:'steady',safety:'yes',protect:'yes',research:'no'};
+function projectR4(s3){ const c=JSON.parse(JSON.stringify(s3)); try{ return p3Play(c,{...R4_DEFAULT}).profit; }catch(e){ return 0; } }
+function replayChecked(team,decs){ const s=p3New(team); let blocked=false; for(const d0 of decs){ const d={...d0,predict:undefined}; const up=p3Upfront(s,d); if(up>0&&up>s.cash+1e-9) blocked=true; try{ p3Play(s,d); }catch(e){ return {s,blocked:true}; } } return {s,blocked}; }
+const outlook=s3=>{ const f=P.funding[s3.funding], v=s3.cash+3*projectR4(s3)-f.repay; return v>0?v*(1-f.share):v; };
+let BEST_SETUP=null;
+function bestSetup(){ if(BEST_SETUP!==null) return BEST_SETUP; const r=replayChecked('Reference',[{site:'ridge',survey:'yes',interviews:'no',pledge:'no'},{funding:'loan',transport:'truck',marketing:'no',rnd:'yes'},{rigs:'full',extend:'no',insurance:'no',safety:'yes',protect:'yes'}]); return BEST_SETUP=projectR4(r.s); }
+function halftime(s){
+ const decs=game.decisions.slice(0,3), H=s.history, c1=decs[0], c2=decs[1], c3=decs[2], site=P.sites[s.site];
+ const proj=projectR4(s), base=outlook(s);
+ const good=[], bad=[], tips=[];
+ // Biggest missed opportunities: change one decision from Rounds 1-3, same luck.
+ const misses=[];
+ for(let R=1;R<=3;R++) for(const d of DECISIONS[R]){ const stAt=replay(game.team,decs.slice(0,R-1)); for(const o of decisionOptions(stAt,R,d.key)){ if(o.v===decs[R-1][d.key]) continue; if(d.info&&o.v==='no') continue;
+  const alt=decs.map(x=>({...x})); alt[R-1][d.key]=o.v; if(d.key==='site'&&o.v==='ridge') alt.forEach((x,i)=>{ if(i>=2) x.protect='yes'; });
+  const r=replayChecked(game.team,alt); if(r.blocked) continue; const gain=outlook(r.s)-base; if(gain>=0.5) misses.push({owner:d.owner,title:d.title,label:o.label,gain}); } }
+ misses.sort((a,b)=>b.gain-a.gain);
+ const incidentCost=H.reduce((a,h)=>a+h.penalties,0);
+ if(yes(c1.survey)) good.push(`<b>Operations bought the survey.</b> The team knew what was underground before committing ${m(site.license)}.`);
+ else if(s.site==='coast') bad.push(`<b>No survey on Coastal Shelf.</b> It holds ${site.actual}k barrels a round, not the advertised ${site.advertised}k. A $0.5M survey would have shown that.`);
+ if(yes(c1.interviews)) good.push('<b>Sales interviewed customers.</b> You already know exactly how much each customer buys, so Round 4 needs no research.');
+ if(s.site==='ridge') good.push('<b>The Explorer picked the biggest site.</b> Northern Ridge has the most earning power in the game.');
+ if(s.rigs==='starter') bad.push('<b>Your field runs at half capacity.</b> Starter rigs pump half of what the site allows, every round.');
+ else good.push(`<b>Full rigs.</b> You’re pumping everything ${site.name} allows.`);
+ if(c2.transport==='pipeline') (site.actual*P.rigs[s.rigs].output>=200?good:bad).push(site.actual*P.rigs[s.rigs].output>=200?'<b>The pipeline fits your volume.</b> Saving $4 a barrel on this much fuel pays back the $3M.':'<b>The pipeline may not pay back.</b> At your volume, the $4-a-barrel saving takes a long time to cover $3M.');
+ if(yes(c2.rnd)) good.push('<b>The geology partnership</b> cuts your pumping cost $4 a barrel from Round 4.');
+ if(yes(c3.extend)) good.push('<b>Field extended.</b> Output rises 15% from Round 4.');
+ if(c2.funding==='investor') bad.push('<b>Gave up 30% of the company.</b> Every $1M you earn from here is worth $0.7M to the founders.');
+ if(incidentCost>0) bad.push(`<b>Accidents and fines have cost ${m(incidentCost)}</b>, and the $3M clean-record bonus is gone.`);
+ else if(!yes(c3.safety)||(site.risky&&!yes(c3.protect))) bad.push(`<b>You skipped ${!yes(c3.safety)?'safety':'wetland protection'} and got lucky.</b> That’s a ${!yes(c3.safety)?'35%':s.pledge?'20%':'50%'} chance of a $4M hit every round.`);
+ else good.push('<b>Clean record so far.</b> The $3M clean-record bonus is still in reach.');
+ if(typeof c3.predict==='number'){ const err=Math.abs(c3.predict-H[2].profit); (err<=P.predictBand?good:bad).push(err<=P.predictBand?`<b>Finance’s prediction was accurate</b>, within ${m(err)}.`:`<b>Finance’s prediction missed by ${m(err)}.</b> Predicted ${m(c3.predict)}, actual ${m(H[2].profit)}.`); }
+ const rating=proj>=11&&incidentCost===0?['top','On track for a top finish']:proj>=6?['mid','Solid, with room to grow']:['low','Behind: time to adjust'];
+ const out=site.actual*P.rigs[s.rigs].output*(s.extend?1+P.extendBoost:1), perBbl=site.cost-(s.rnd?P.rndCut:0)+P.transport[s.transport].perBbl;
+ tips.push(out<=P.customers.airlines.cap?`<b>Sales – Round 4:</b> your ${Math.round(out)}k barrels fit under the airlines’ 150k cap, and airlines pay $15 more. ${s.interviews?'Check your interview results':'Research shows how much they’ll take'} before choosing.`:`<b>Sales – Round 4:</b> airlines take at most 150k barrels, and you’ll pump about ${Math.round(out)}k. Anything left over goes to traders at $60. ${s.interviews?'Your interview results':'Research'} show how much each customer buys.`);
+ tips.push(`<b>Finance – predictions:</b> profit = barrels sold × price − ${Math.round(out)}k barrels × $${perBbl} (pumping + transport) − running costs ($1M overhead + $1M safety${site.risky?' + $1M protection':''}${s.insurance?' + $0.5M insurance':''}).`);
+ tips.push(`<b>Operations – pace:</b> pushing the field adds 20% output but +$3 a barrel and +10% accident risk every round${s.insurance?'. Your insurance covers 75% of an accident':''}.`);
+ if(!yes(c3.safety)||(site.risky&&!yes(c3.protect))) tips.push(`<b>Turn ${!yes(c3.safety)?'safety':'wetland protection'} back on.</b> $1M a round is cheaper than the expected cost of a $4M hit, and it protects the $3M bonus.`);
+ tips.push(`<b>CEO and Sales – Round 5:</b> the cheapest crisis response usually carries a risk${s.pledge?' (your pledge lowers it)':''}. Sales can spend $0.5M to stop a crisis from costing you customer orders.`);
+ tips.push(`<b>Everyone – Round 6:</b> a buyer will offer $8M. You’re on pace for about ${m(proj)} profit a round before the competitor’s price cut. If the CEO sells, money Operations and Sales spend that round is wasted, so decide together.`);
+ if(c2.funding==='loan') tips.push('<b>Finance – the loan:</b> repaying early in Round 5 costs $7M instead of $8M at the end, if you can spare the cash.');
+ return {rating,proj,best:bestSetup(),good,bad,tips,misses:misses.slice(0,2)};
+}
+function halfKey(){ return 'fiteen-half:'+slug(game.team)+':'+JSON.stringify(game.decisions.slice(0,3).map(d=>[d.site,d.funding,d.rigs])); }
+function showHalftime(){
+ if(!st||st.history.length<3) return;
+ const s3=replay(game.team,game.decisions.slice(0,3)), r=halftime(s3);
+ const back=document.createElement('div'); back.className='modal-back'; back.id='halftime';
+ back.innerHTML=`<div class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="htTitle">
+  <div><h3>Halftime report · after Round 3 of 6</h3><h2 id="htTitle">How ${esc(st.team)} is doing</h2></div>
+  <div class="grade"><span class="pill ${r.rating[0]}">${r.rating[1]}</span>
+   <div class="kpi"><span>Cash after Round 3</span><strong>${m(s3.cash)}</strong></div>
+   <div class="kpi"><span>Projected profit per round</span><strong>${m(r.proj)}</strong></div>
+   <div class="kpi"><span>A strong setup</span><strong>${m(r.best)}</strong></div></div>
+  <p class="note" style="margin:0">Projection assumes selling to power utilities at Market price, steady pace, safety on. The strong setup is Northern Ridge with a loan, full rigs and the research partnership. Cash is low for most teams right now because rigs are a big up-front purchase. Profit rises from Round 4, when customers pay more than traders.</p>
+  ${r.good.length?`<div><h3>What went well</h3><ul class="fb good">${r.good.map(x=>`<li>${x}</li>`).join('')}</ul></div>`:''}
+  ${r.bad.length?`<div><h3>What hurt you</h3><ul class="fb bad">${r.bad.map(x=>`<li>${x}</li>`).join('')}</ul></div>`:''}
+  ${r.misses.length?`<div><h3>Biggest missed opportunities so far</h3><ul class="fb bad">${r.misses.map(x=>`<li><b>${x.owner}: ${x.title.replace(/\?$/,'')} \u2192 ${x.label}</b> would be worth about ${m(x.gain)} more by the end of the game, with everything else the same. Too late to change, but worth discussing.</li>`).join('')}</ul></div>`:''}
+  <div><h3>Where to improve in Rounds 4–6</h3><ul class="fb tip">${r.tips.map(x=>`<li>${x}</li>`).join('')}</ul></div>
+  <p class="note" style="margin:0">Talk this through as a team for two minutes before starting Round 4.</p>
+  <div class="row"><button class="go" id="htClose">Start Round 4</button></div></div>`;
+ document.body.appendChild(back);
+ const close=()=>{ back.remove(); document.removeEventListener('keydown',esc_); const b=$('#htOpen'); if(b) b.focus(); };
+ const esc_=e=>{ if(e.key==='Escape') close(); };
+ document.addEventListener('keydown',esc_);
+ back.addEventListener('click',e=>{ if(e.target===back) close(); });
+ $('#htClose').onclick=close; back.querySelector('.modal').focus({preventScroll:true}); back.scrollTop=0;
+ if(st.done) $('#htClose').textContent='Close';
+ else if(st.round>4) $('#htClose').textContent='Back to the game';
+ try{ localStorage.setItem(halfKey(),'1'); }catch(e){}
+}
+function maybeHalftime(){
+ if(mode!=='game'||!st||st.history.length!==3||st.done||$('#halftime')) return;
+ let seen=false; try{ seen=localStorage.getItem(halfKey())==='1'; }catch(e){}
+ if(!seen) showHalftime();
+}
+function bannerHtml(){
+ if(live&&canWrite) return `<div class="banner live"><span class="dot"></span><span><b>Live.</b> Everyone who joins “${esc(game.team)}” sees every choice and result as it happens. Agree before you click Run.</span></div>`;
+ if(live) return `<div class="banner watch"><span class="dot"></span><span><b>Watching live.</b> You see this team’s choices as they happen. Only people the owner invited as editors can make choices.</span></div>`;
+ return `<div class="banner"><span class="dot"></span><span><b>This device only.</b> Live team play isn’t available here, so teammates won’t see your choices.</span></div>`;
+}
+function renderRolesScreen(){
+ app.innerHTML=`<div class="start" style="max-width:760px">
+ <h1><small>${esc(game.team)} · before you start</small>Pick your role</h1>
+ <p>Each round is led by one role, and only that role’s leader can press Run. Everyone can still pick options and type during any round.</p>
+ <p class="note">Teams of 5: one role each. Fewer than 5: some people take two roles. More than 5: up to two people can share a role.</p>
+ <label for="myname" style="flex-direction:column;align-items:flex-start;gap:4px"><h3 style="margin:0">Your name</h3><input id="myname" class="textin" maxlength="40" value="${esc(me.name)}" placeholder="First name"></label>
+ <fieldset><legend>Your role (pick 1 or 2)</legend><div class="rolegrid" id="rolegrid"></div></fieldset>
+ <p class="warn" id="rolewarn"></p>
+ <div class="row"><button class="go" id="rolego">Continue to the game</button>${game.roster&&game.roster[myId]?'<button class="alt" id="rolecancel">Cancel</button>':''}<button class="alt" id="roleleave">Switch team</button></div></div>`;
+ renderRoleCards();
+ $('#myname').addEventListener('input',()=>{ me.name=$('#myname').value; roleCheck(); });
+ $('#rolego').onclick=saveRoles; $('#roleleave').onclick=leaveGame;
+ if($('#rolecancel')) $('#rolecancel').onclick=()=>{ const mine=game.roster[myId]; if(mine) me={name:mine.name,roles:[...mine.roles]}; mode='game'; render(); };
+}
+function renderRoleCards(){
+ const el=$('#rolegrid'); if(!el) return;
+ const others={...game.roster}; delete others[myId];
+ el.innerHTML=ROLES.map(([r,desc])=>{ const h=holders(r,others), mine=me.roles.includes(r), full=h.length>=MAX_PER_ROLE, capped=!mine&&me.roles.length>=MAX_ROLES;
+  return `<label class="rolecard"><input type="checkbox" value="${r}" ${mine?'checked':''} ${(!mine&&(full||capped))?'disabled':''}><b>${r}</b><span class="why">${desc}</span><span class="who">${h.length?'Taken by '+h.map(([k,v])=>esc(v.name)).join(' & '):'Open'}${full&&!mine?' · full':''}</span></label>`; }).join('');
+ el.querySelectorAll('input').forEach(i=>i.addEventListener('change',()=>{ me.roles=i.checked?[...new Set([...me.roles,i.value])]:me.roles.filter(x=>x!==i.value); renderRoleCards(); }));
+ roleCheck();
+}
+function roleCheck(){
+ const w=$('#rolewarn'), b=$('#rolego'); if(!w||!b) return;
+ const msg=!me.name.trim()?'Enter your name.':!me.roles.length?'Pick at least one role.':'';
+ w.textContent=msg; b.disabled=!!msg;
+}
+async function saveRoles(){
+ me.name=me.name.trim().slice(0,40); try{ localStorage.setItem('novium-name',me.name); }catch(e){}
+ const entry={name:me.name,roles:ROLE_KEYS.filter(r=>me.roles.includes(r))};
+ game.roster={...game.roster,[myId]:entry};
+ if(live&&dbRef&&canWrite){ $('#rolego').disabled=true; try{ await enqueue(()=>dbRef.update({roster:{[myId]:entry}})); }catch(e){ $('#rolego').disabled=false; $('#rolewarn').textContent='Your role didn’t save. Check your connection and try again.'; return; } }
+ mode='game'; render();
+}
+function rosterHtml(){
+ if(st.done) return '';
+ const R=st.round, lead=leadOf(R), roster=game.roster||{};
+ return ROLE_KEYS.map(r=>{ const h=holders(r,roster); return `<span class="${r===lead?'lead':''}">${r}${r===lead?' (leads now)':''}: ${h.length?h.map(([k,v])=>esc(v.name)+(k===myId?' (you)':'')).join(' & '):'<span class="open">open</span>'}</span>`; }).join('');
+}
+function renderRoster(){ const el=$('#roster'); if(el) el.innerHTML=rosterHtml(); }
+function runBlock(){
+ if(!canWrite) return 'Watching only.';
+ if(!live) return '';
+ const lead=leadOf(st.round);
+ if(!holders(lead,game.roster||{}).length) return `No one has the ${lead} role yet. Pick it under “Change my role” to run this round.`;
+ if(!me.roles.includes(lead)) return `Only the ${lead} can run this round. You can still pick options and type.`;
+ return '';
+}
+function render(){
+ if(mode==='lobby') return renderLobby();
+ if(mode==='roles') return renderRolesScreen();
+ const R=st.round;
+ app.innerHTML=`<header><h1><small>${esc(st.team)}</small>Fiteen Frontier</h1><div class="row">${canWrite?'<button class="alt" id="myrole">Change my role</button>':''}${st.history.length>=3?'<button class="alt" id="htOpen">Halftime report</button>':''}<button class="alt" id="leave">Switch team</button>${canWrite?`<button class="alt" id="reset">${confirmReset?'Click again to erase this game':'Start over'}</button>`:''}</div></header>
+ ${bannerHtml()}
+ <div class="roster" id="roster">${rosterHtml()}</div>
+ <div class="track" style="grid-template-columns:repeat(6,1fr)">${ROUNDS.map((r,i)=>`<div class="step ${i+1<R||st.done?'done':i+1===R?'now':''}"><b>R${i+1}</b>${r[0]}</div>`).join('')}</div>
+ <div class="kpis">${[['Cash',m(st.cash)],['Site',st.site?P.sites[st.site].name:'—'],['Funding',st.round>2?P.funding[st.funding].name:'—'],['Accidents & fines',st.incidents]].map(([a,b])=>`<div class="kpi"><span>${a}</span><strong>${b}</strong></div>`).join('')}</div>
+ <div class="grid"><section class="sheet">${st.done?endView():decisionView()}</section><aside class="ledger">${ledger()}${logView()}</aside></div>`;
+ $('#leave').onclick=leaveGame;
+ if($('#htOpen')) $('#htOpen').onclick=showHalftime;
+ setTimeout(maybeHalftime,0);
+ if($('#myrole')) $('#myrole').onclick=()=>{ mode='roles'; render(); };
+ if($('#reset')) $('#reset').onclick=resetGame;
+ if(st.done){
+  $('#copy').onclick=()=>{const t=$('#logtext').value;navigator.clipboard.writeText(t).then(()=>$('#cp').textContent='Copied.',()=>{const a=$('#logtext');a.hidden=false;a.select();$('#cp').textContent='Select all and copy the text above.'})};
+  return;
+ }
+ applyDraft(game.draft);
+ const sheet=$('.sheet');
+ if(!canWrite){ sheet.querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=true); check(); return; }
+ sheet.addEventListener('input',onEdit); sheet.addEventListener('change',onEdit);
+ if($('#research')) $('#research').onclick=()=>{ game.draft={...readDraft(),research:true}; rebuild(); render(); queueDraftSave(true); };
+ $('#run').onclick=runRound;
+ check();
+}
+function onEdit(e){
+ if(e.target.id==='crisisCard'){ if(e.type!=='change') return; game.draft={...readDraft(),crisisCard:e.target.value}; rebuild(); render(); queueDraftSave(true); return; }
+ game.draft=readDraft(); check(); queueDraftSave(false);
+}
+async function runRound(){
+ const d=readD(); const decisions=[...game.decisions,d];
+ $('#run').disabled=true;
+ if(live&&dbRef){
+  clearTimeout(saveTimer); saveTimer=null;
+  try{ await enqueue(()=>dbRef.update({decisions,draft:null,updatedAt:Date.now()})); }
+  catch(e){ dirtyLocal=false; writeFailed(e); check(); return; }
+  dirtyLocal=false;
+ }
+ game={...game,decisions,draft:{}}; rebuild(); render(); window.scrollTo({top:0});
+}
+async function resetGame(){
+ if(!confirmReset){ confirmReset=true; render(); setTimeout(()=>{ if(confirmReset){ confirmReset=false; if(mode==='game') render(); } },4000); return; }
+ confirmReset=false;
+ if(live&&dbRef){ clearTimeout(saveTimer); saveTimer=null; try{ await enqueue(()=>dbRef.update({decisions:[],draft:null,updatedAt:Date.now()})); }catch(e){ writeFailed(e); return; } dirtyLocal=false; }
+ game={...game,decisions:[],draft:{}}; rebuild(); render();
+}
+render();
+init();
+</script>
+
+</body></html>
